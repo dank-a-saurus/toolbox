@@ -1187,25 +1187,6 @@ enter_client_name() {
 update_wg_conf() {
 	# Append new client configuration to the WireGuard interface
 	wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" "$WG_CONF")
-	# "wg addconf" loads the peer into the running device but, unlike "wg-quick up",
-	# does NOT install the peer's AllowedIPs into the kernel routing table. At install
-	# time the first client is brought up by "wg-quick up", which adds those routes;
-	# clients added afterwards via this function would otherwise be left without them.
-	# For the default NAT / ULA setup this is harmless, because every client falls
-	# under the on-link subnet that wg0 already owns. But with a routed (globally
-	# routable) IPv6 prefix that same /64 is typically also on-link on the WAN
-	# interface, so without an explicit per-client /128 via wg0 the kernel sends the
-	# client's return traffic out the wrong interface. Mirror what "wg-quick up" does
-	# for boot-time peers so that live-added clients behave identically.
-	while IFS= read -r addr; do
-		[ -z "$addr" ] && continue
-		case "$addr" in
-			0.0.0.0/0|::/0) continue ;;
-			*:*) ip -6 route add "$addr" dev wg0 2>/dev/null ;;
-			*)   ip route add "$addr" dev wg0 2>/dev/null ;;
-		esac
-	done < <(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" \
-		| grep '^AllowedIPs' | cut -d '=' -f 2 | tr ',' '\n' | sed 's/ //g')
 }
 
 print_client_added() {
@@ -1280,17 +1261,6 @@ remove_client_wg() {
 	# The following is the right way to avoid disrupting other active connections:
 	# Remove from the live interface
 	wg set wg0 peer "$(sed -n "/^# BEGIN_PEER $client$/,\$p" "$WG_CONF" | grep -m 1 PublicKey | cut -d " " -f 3)" remove
-	# Drop any explicit per-client routes added by update_wg_conf for live-added
-	# clients (no-op for clients whose routes are managed by wg-quick).
-	while IFS= read -r addr; do
-		[ -z "$addr" ] && continue
-		case "$addr" in
-			0.0.0.0/0|::/0) continue ;;
-			*:*) ip -6 route del "$addr" dev wg0 2>/dev/null ;;
-			*)   ip route del "$addr" dev wg0 2>/dev/null ;;
-		esac
-	done < <(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" \
-		| grep '^AllowedIPs' | cut -d '=' -f 2 | tr ',' '\n' | sed 's/ //g')
 	# Remove from the configuration file
 	sed -i "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/d" "$WG_CONF"
 	remove_client_conf
@@ -1398,8 +1368,8 @@ dns=""
 dns1=""
 dns2=""
 ipv4_subnet="10.7.0"
-ipv6_prefix="fddd:2c4:2c4:2c4"
-ipv6_interface_suffix="::1"
+ipv6_prefix=""
+ipv6_interface_suffix=""
 
 parse_args "$@"
 check_args
@@ -1425,7 +1395,7 @@ fi
 
 if [ "$add_client" = 1 ]; then
 	show_header
-	new_client add_client
+	new_client
 	update_wg_conf
 	echo
 	show_client_qr_code
@@ -1535,7 +1505,7 @@ else
 		1)
 			enter_client_name
 			select_dns
-			new_client add_client
+			new_client
 			update_wg_conf
 			echo
 			show_client_qr_code
