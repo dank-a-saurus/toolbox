@@ -476,6 +476,13 @@ detect_ip() {
 	fi
 }
 
+detect_wan_iface() {
+	wan_iface=$(ip -6 route show default | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -n 1)
+	if [ -z "$wan_iface" ]; then
+		wan_iface=$(ip -4 route show default | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -n 1)
+	fi
+}
+
 check_nat_ip() {
 	# If $ip is a private IP address, the server must be behind NAT
 	if check_pvt_ip "$ip"; then
@@ -1043,6 +1050,17 @@ PresharedKey = $psk
 AllowedIPs = ${ipv4_subnet}.$octet/32$([[ -n "$ipv6_prefix" ]] && echo ", ${ipv6_prefix}${client_ipv6_suffix}/128")
 # END_PEER $client
 EOF
+
+	# Dynamically inject PostUp / PostDown rules into [Interface] for routed IPv6 prefixes
+	if [[ -n "$ipv6_prefix" ]] && ! is_ipv6_nat; then
+		detect_wan_iface
+		if [[ -n "$wan_iface" ]]; then
+			peer_v6="${ipv6_prefix}${client_ipv6_suffix}"
+			sed -i "/^\[Interface\]/a PostDown = ip -6 neigh del proxy ${peer_v6} dev ${wan_iface}" "$WG_CONF"
+			sed -i "/^\[Interface\]/a PostUp = ip -6 neigh add proxy ${peer_v6} dev ${wan_iface}" "$WG_CONF"
+		fi
+	fi
+
 	# Create client configuration
 	get_export_dir
 	cat << EOF > "$export_dir$client".conf
@@ -1071,8 +1089,9 @@ update_sysctl() {
 	# Enable net.ipv4.ip_forward for the system
 	echo 'net.ipv4.ip_forward=1' > "$conf_fwd"
 	if [[ -n "$ip6" ]]; then
-		# Enable net.ipv6.conf.all.forwarding for the system
+		# Enable net.ipv6.conf.all.forwarding and proxy_ndp for the system
 		echo "net.ipv6.conf.all.forwarding=1" >> "$conf_fwd"
+		echo "net.ipv6.conf.all.proxy_ndp=1" >> "$conf_fwd"
 	fi
 	# Optimize sysctl settings such as TCP buffer sizes
 	base_url="https://github.com/hwdsl2/vpn-extras/releases/download/v1.0.0"
@@ -1187,25 +1206,17 @@ enter_client_name() {
 update_wg_conf() {
 	# Append new client configuration to the WireGuard interface
 	wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" "$WG_CONF")
-	# "wg addconf" loads the peer into the running device but, unlike "wg-quick up",
-	# does NOT install the peer's AllowedIPs into the kernel routing table. At install
-	# time the first client is brought up by "wg-quick up", which adds those routes;
-	# clients added afterwards via this function would otherwise be left without them.
-	# For the default NAT / ULA setup this is harmless, because every client falls
-	# under the on-link subnet that wg0 already owns. But with a routed (globally
-	# routable) IPv6 prefix that same /64 is typically also on-link on the WAN
-	# interface, so without an explicit per-client /128 via wg0 the kernel sends the
-	# client's return traffic out the wrong interface. Mirror what "wg-quick up" does
-	# for boot-time peers so that live-added clients behave identically.
-	while IFS= read -r addr; do
-		[ -z "$addr" ] && continue
-		case "$addr" in
-			0.0.0.0/0|::/0) continue ;;
-			*:*) ip -6 route add "$addr" dev wg0 2>/dev/null ;;
-			*)   ip route add "$addr" dev wg0 2>/dev/null ;;
-		esac
-	done < <(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" \
-		| grep '^AllowedIPs' | cut -d '=' -f 2 | tr ',' '\n' | sed 's/ //g')
+	
+	# Add NDP proxy to live interface for immediate routing
+	if [[ -n "$ipv6_prefix" ]] && ! is_ipv6_nat; then
+		detect_wan_iface
+		if [[ -n "$wan_iface" ]]; then
+			client_ipv6=$(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" | grep AllowedIPs | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/128' | cut -d/ -f1)
+			if [[ -n "$client_ipv6" ]]; then
+				ip -6 neigh add proxy "$client_ipv6" dev "$wan_iface" 2>/dev/null || true
+			fi
+		fi
+	fi
 }
 
 print_client_added() {
@@ -1277,22 +1288,26 @@ print_remove_client() {
 }
 
 remove_client_wg() {
+	# Extract IPv6 before deleting from config
+	client_ipv6=$(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" | grep AllowedIPs | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}/128' | cut -d/ -f1)
+
 	# The following is the right way to avoid disrupting other active connections:
 	# Remove from the live interface
 	wg set wg0 peer "$(sed -n "/^# BEGIN_PEER $client$/,\$p" "$WG_CONF" | grep -m 1 PublicKey | cut -d " " -f 3)" remove
-	# Drop any explicit per-client routes added by update_wg_conf for live-added
-	# clients (no-op for clients whose routes are managed by wg-quick).
-	while IFS= read -r addr; do
-		[ -z "$addr" ] && continue
-		case "$addr" in
-			0.0.0.0/0|::/0) continue ;;
-			*:*) ip -6 route del "$addr" dev wg0 2>/dev/null ;;
-			*)   ip route del "$addr" dev wg0 2>/dev/null ;;
-		esac
-	done < <(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" \
-		| grep '^AllowedIPs' | cut -d '=' -f 2 | tr ',' '\n' | sed 's/ //g')
 	# Remove from the configuration file
 	sed -i "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/d" "$WG_CONF"
+	
+	# Remove NDP proxy entries
+	if [[ -n "$client_ipv6" ]]; then
+		detect_wan_iface
+		if [[ -n "$wan_iface" ]]; then
+			ip -6 neigh del proxy "$client_ipv6" dev "$wan_iface" 2>/dev/null || true
+			# Clean up PostUp/PostDown from config
+			sed -i "/ip -6 neigh add proxy ${client_ipv6} dev/d" "$WG_CONF"
+			sed -i "/ip -6 neigh del proxy ${client_ipv6} dev/d" "$WG_CONF"
+		fi
+	fi
+
 	remove_client_conf
 }
 
@@ -1398,8 +1413,8 @@ dns=""
 dns1=""
 dns2=""
 ipv4_subnet="10.7.0"
-ipv6_prefix="fddd:2c4:2c4:2c4"
-ipv6_interface_suffix="::1"
+ipv6_prefix=""
+ipv6_interface_suffix=""
 
 parse_args "$@"
 check_args
@@ -1425,7 +1440,7 @@ fi
 
 if [ "$add_client" = 1 ]; then
 	show_header
-	new_client add_client
+	new_client
 	update_wg_conf
 	echo
 	show_client_qr_code
@@ -1535,7 +1550,7 @@ else
 		1)
 			enter_client_name
 			select_dns
-			new_client add_client
+			new_client
 			update_wg_conf
 			echo
 			show_client_qr_code
