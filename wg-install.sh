@@ -1,10 +1,13 @@
 #!/bin/bash
 #
-# https://github.com/hwdsl2/wireguard-install
+# https://github.com/dank-a-saurus/toolbox/wg-install
 #
-# Based on the work of Nyr and contributors at:
+# ipv6 updates and tweaks by Dank A. Saurus
+# based on previous works by Nyr, Lin Song, hwdsl2, and others
+# https://github.com/hwdsl2/wireguard-install
 # https://github.com/Nyr/wireguard-install
 #
+# Copyright (c) 2026 Dank A. Saurus (contact@dank.ninja)
 # Copyright (c) 2022-2024 Lin Song <linsongui@gmail.com>
 # Copyright (c) 2020-2023 Nyr
 #
