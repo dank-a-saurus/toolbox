@@ -1206,7 +1206,6 @@ enter_client_name() {
 update_wg_conf() {
 	# Append new client configuration to the WireGuard interface
 	wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" "$WG_CONF")
-<<<<<<< HEAD
 	
 	# Add NDP proxy to live interface for immediate routing
 	if [[ -n "$ipv6_prefix" ]] && ! is_ipv6_nat; then
@@ -1218,8 +1217,6 @@ update_wg_conf() {
 			fi
 		fi
 	fi
-=======
->>>>>>> 77e840cad40150be7627eca15c3af50ff3787f7f
 }
 
 print_client_added() {
