@@ -850,12 +850,14 @@ ExecStop=$iptables_path -w 5 -D FORWARD -m state --state RELATED,ESTABLISHED -j 
 			if is_ipv6_nat; then
 				echo "ExecStart=$ip6tables_path -w 5 -t nat -A POSTROUTING -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j MASQUERADE" >> /etc/systemd/system/wg-iptables.service
 			fi
-			echo "ExecStart=$ip6tables_path -w 5 -I FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
+			echo "ExecStart=$ip6tables_path -w 5 -I INPUT -p udp --dport $port -j ACCEPT
+ExecStart=$ip6tables_path -w 5 -I FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
 ExecStart=$ip6tables_path -w 5 -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" >> /etc/systemd/system/wg-iptables.service
 			if is_ipv6_nat; then
 				echo "ExecStop=$ip6tables_path -w 5 -t nat -D POSTROUTING -s ${ipv6_prefix}::/64 ! -d ${ipv6_prefix}::/64 -j MASQUERADE" >> /etc/systemd/system/wg-iptables.service
 			fi
-			echo "ExecStop=$ip6tables_path -w 5 -D FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
+			echo "ExecStop=$ip6tables_path -w 5 -D INPUT -p udp --dport $port -j ACCEPT
+ExecStop=$ip6tables_path -w 5 -D FORWARD -s ${ipv6_prefix}::/64 -j ACCEPT
 ExecStop=$ip6tables_path -w 5 -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" >> /etc/systemd/system/wg-iptables.service
 		fi
 		echo "RemainAfterExit=yes
